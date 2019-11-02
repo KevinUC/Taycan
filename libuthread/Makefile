@@ -1,6 +1,32 @@
 # Target library
-lib := libuthread.a
 
-all: $(lib)
+targets := libuthread.a
+newObjs := sem.o
+allObjs := sem.o queue.o thread.o 
 
-## TODO: Phase 1 and Phase 2
+CC      := gcc
+CFLAGS  := -Wall -Werror
+AR      := ar
+ARFLAGS := rcs
+
+ifneq ($(V),1)
+B = @
+endif
+
+all: $(targets)
+
+deps := $(patsubst %.o,%.d,$(newObjs))
+-include $(deps)
+DEPFLAGS = -MMD -MF $(@:.o=.d)
+
+libuthread.a: $(allObjs)
+	@echo "AR   $@"
+	$(B)$(AR) $(ARFLAGS) $@ $^
+
+%.o: %.c
+	@echo "CC   $@"
+	$(B)$(CC) $(CFLAGS) -c -o $@ $< $(DEPFLAGS)
+
+clean: 
+	@echo "CLEAN"
+	$(B)rm -f $(newObjs) $(targets) $(deps)
