@@ -49,6 +49,8 @@ int sem_destroy(sem_t sem)
 int sem_down(sem_t sem)
 {
 
+	printf("%s\n", __func__);
+
 	if (sem == NULL)
 	{
 		return -1;
@@ -75,6 +77,8 @@ int sem_down(sem_t sem)
 
 int sem_up(sem_t sem)
 {
+
+	printf("%s\n", __func__);
 
 	if (sem == NULL)
 	{

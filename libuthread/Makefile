@@ -1,8 +1,8 @@
 # Target library
 
 targets := libuthread.a
-newObjs := sem.o
-allObjs := sem.o queue.o thread.o 
+newObjs := sem.o tps.o
+allObjs := sem.o queue.o thread.o tps.o
 
 CC      := gcc
 CFLAGS  := -Wall -Werror
