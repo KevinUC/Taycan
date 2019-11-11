@@ -212,6 +212,10 @@ int tps_destroy(void)
 		free(tps->_page);
 		tps->_page = NULL;
 	}
+	else
+	{
+		tps->_page->_refCount--; /* remove reference to the page memory */
+	}
 
 	queue_delete(tpsQueue, tps); /* remove node from queue */
 

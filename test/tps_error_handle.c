@@ -8,11 +8,18 @@
 #include <tps.h>
 #include <sem.h>
 
+/* Tests error handling for all methods */
+
 sem_t sem1;
 
 void *thread1(void *arg)
 {
+    tps_create();
+    assert(tps_destroy() == 0);
     assert(tps_destroy() == -1); /* test error handling for tps_destroy */
+
+    assert(tps_create() == 0);
+    assert(tps_destroy() == 0);
 
     sem_up(sem1);
 
