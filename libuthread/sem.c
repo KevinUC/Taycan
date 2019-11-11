@@ -49,8 +49,6 @@ int sem_destroy(sem_t sem)
 int sem_down(sem_t sem)
 {
 
-	printf("%s\n", __func__);
-
 	if (sem == NULL)
 	{
 		return -1;
@@ -78,8 +76,6 @@ int sem_down(sem_t sem)
 int sem_up(sem_t sem)
 {
 
-	printf("%s\n", __func__);
-
 	if (sem == NULL)
 	{
 		return -1;
@@ -97,8 +93,7 @@ int sem_up(sem_t sem)
 			pthread_t tid;
 			queue_dequeue(sem->_blockingQueue, (void **)&tid);
 
-			int ret = thread_unblock(tid);
-			assert(ret != -1);
+			thread_unblock(tid);
 		}
 		else
 		{

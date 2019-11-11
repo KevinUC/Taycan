@@ -7,22 +7,29 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <assert.h>
 
 #include "queue.h"
 #include "thread.h"
 #include "tps.h"
 
+struct Page
+{
+	void *_pageAddr; /* address to the start of page */
+	int _refCount;   /* count number of TPS referencing to this page */
+} Page;
+
+typedef struct Page *page_t;
+
 struct TPS
 {
 	pthread_t _tid;
-	void *_storage;
+	page_t _page;
 } TPS;
 
 typedef struct TPS *tps_t;
 
-queue_t tpsQueue;			 /* queue of tps structs */
-
+queue_t tpsQueue; /* queue of tps structs */
+int init = 0;	 /* check if the TPS library has been initialized */
 
 /* Callback function that finds the tps */
 int findTPS(void *data, void *arg)
@@ -44,7 +51,7 @@ int findTPSPageAddr(void *data, void *arg)
 	void *addr = arg; /* address of beginning of page where error occurs */
 	tps_t currentTps = (tps_t)data;
 
-	if (currentTps->_storage == addr)
+	if (currentTps->_page->_pageAddr == addr)
 	{
 		return 1;
 	}
@@ -65,7 +72,6 @@ int hasTPSBeenAllocated(pthread_t tid, tps_t *address)
 
 	if (ret == -1 || tps == NULL)
 	{
-		//printf("TPS has not been allocated \n");
 		return 0; /* TPS area has not been allocated */
 	}
 
@@ -74,7 +80,6 @@ int hasTPSBeenAllocated(pthread_t tid, tps_t *address)
 		*address = tps;
 	}
 
-	//printf("TPS has been allocated \n");
 	return 1; /* TPS area has been allocated */
 }
 
@@ -84,7 +89,7 @@ int isTPSReadWriteValid(size_t offset, size_t length,
 	pthread_t tid = pthread_self();
 
 	int hasTPS = hasTPSBeenAllocated(tid, address);
-	int withinBoundary = offset >= 0 && offset + length <= TPS_SIZE;
+	int withinBoundary = (int)offset >= 0 && (int)offset + (int)length <= TPS_SIZE;
 	int isBufValid = buffer != NULL;
 
 	return hasTPS && withinBoundary && isBufValid;
@@ -99,14 +104,10 @@ static void segv_handler(int sig, siginfo_t *si, void *context)
 
 	int ret = queue_iterate(tpsQueue, findTPSPageAddr, p_fault, (void **)&tps);
 
-	if (ret != -1 && tps != NULL && tps->_storage == p_fault)
+	if (ret != -1 && tps != NULL && tps->_page->_pageAddr == p_fault)
 	{
 		/* match detected */
 		fprintf(stderr, "TPS protection error!\n");
-	}
-	else
-	{
-		fprintf(stderr, "Not TPS protecttion error, happy debugging!\n");
 	}
 
 	/* In any case, restore the default signal handlers */
@@ -118,18 +119,12 @@ static void segv_handler(int sig, siginfo_t *si, void *context)
 
 int tps_init(int segv)
 {
-	static int firstInvoation = 1;
-
-	if (!firstInvoation)
+	if (init)
 	{
-		printf("tps_init: already initialized! \n");
-		return -1;
+		return -1; /* has already been initialized */
 	}
 
-	firstInvoation = 0;
-
 	tpsQueue = queue_create();
-	assert(tpsQueue != NULL);
 
 	if (tpsQueue == NULL)
 	{
@@ -147,12 +142,19 @@ int tps_init(int segv)
 		sigaction(SIGSEGV, &sa, NULL);
 	}
 
+	init = 1;
+
 	return 0;
 }
 
 int tps_create(void)
 {
-	// printf("%s\n", __func__);
+
+	if (!init)
+	{
+		return -1;
+	}
+
 	pthread_t tid = pthread_self();
 
 	/* first check if current thread already has a TPS area */
@@ -165,15 +167,13 @@ int tps_create(void)
 	tps_t newTPS = malloc(sizeof(TPS));
 
 	newTPS->_tid = tid;
-	newTPS->_storage = NULL;
+	newTPS->_page = malloc(sizeof(Page));
 
-	/* no read/write protection by default */
-	newTPS->_storage = mmap(NULL, TPS_SIZE,
-							PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	newTPS->_page->_refCount = 1;
+	newTPS->_page->_pageAddr = mmap(NULL, TPS_SIZE,
+									PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
-	assert(newTPS->_storage != NULL);
-
-	if (newTPS->_storage == NULL)
+	if (newTPS->_page->_pageAddr == NULL)
 	{
 		return -1; /* page allocation faliure */
 	}
@@ -189,9 +189,13 @@ int tps_create(void)
 
 int tps_destroy(void)
 {
-	//printf("%s\n", __func__);
-	pthread_t tid = pthread_self();
 
+	if (!init)
+	{
+		return -1;
+	}
+
+	pthread_t tid = pthread_self();
 	tps_t tps = NULL;
 
 	if (!hasTPSBeenAllocated(tid, &tps))
@@ -199,15 +203,17 @@ int tps_destroy(void)
 		return -1; /* no TPS area associated with thread tid exists */
 	}
 
-	assert(tps != NULL);
-
 	enter_critical_section();
 
-	int ret = munmap(tps->_storage, TPS_SIZE); /* remove TPS area */
-	assert(ret == 0);
+	if (tps->_page->_refCount == 1)
+	{
+		/* remove page structure if not shared with other threads */
+		munmap(tps->_page->_pageAddr, TPS_SIZE); /* remove TPS area */
+		free(tps->_page);
+		tps->_page = NULL;
+	}
 
-	ret = queue_delete(tpsQueue, tps); /* remove node from queue */
-	assert(ret == 0);
+	queue_delete(tpsQueue, tps); /* remove node from queue */
 
 	exit_critical_section();
 
@@ -216,29 +222,26 @@ int tps_destroy(void)
 
 int tps_read(size_t offset, size_t length, char *buffer)
 {
-	//printf("%s\n", __func__);
-	tps_t tps = NULL;
-	int ret = 0;
 
-	if (!isTPSReadWriteValid(offset, length, buffer, &tps))
+	if (!init)
 	{
-		printf("TPS read not valid \n");
 		return -1;
 	}
 
-	assert(tps != NULL);
+	tps_t tps = NULL;
+
+	if (!isTPSReadWriteValid(offset, length, buffer, &tps))
+	{
+		return -1;
+	}
 
 	enter_critical_section();
 
-	ret = mprotect(tps->_storage + offset, length, PROT_READ); /* allow read */
+	mprotect(tps->_page->_pageAddr + offset, length, PROT_READ); /* allow read */
 
-	assert(ret == 0);
+	memcpy(buffer, tps->_page->_pageAddr + offset, length); /* read from TPS area */
 
-	memcpy(buffer, tps->_storage + offset, length); /* read from TPS area */
-
-	ret = mprotect(tps->_storage + offset, length, PROT_NONE); /* reset */
-
-	assert(ret == 0);
+	mprotect(tps->_page->_pageAddr + offset, length, PROT_NONE); /* reset */
 
 	exit_critical_section();
 
@@ -247,29 +250,53 @@ int tps_read(size_t offset, size_t length, char *buffer)
 
 int tps_write(size_t offset, size_t length, char *buffer)
 {
-	//printf("%s\n", __func__);
-	tps_t tps = NULL;
-	int ret = 0;
 
-	if (!isTPSReadWriteValid(offset, length, buffer, &tps))
+	if (!init)
 	{
-		printf("TPS write not valid \n");
 		return -1;
 	}
 
-	assert(tps != NULL);
+	tps_t tps = NULL;
+
+	if (!isTPSReadWriteValid(offset, length, buffer, &tps))
+	{
+		return -1;
+	}
 
 	enter_critical_section();
 
-	ret = mprotect(tps->_storage + offset, length, PROT_WRITE);
+	if (tps->_page->_refCount > 1)
+	{
+		/* the page is shared, so need to create a new one */
 
-	assert(ret == 0);
+		tps->_page->_refCount -= 1; /* decrement reference count */
 
-	memcpy(tps->_storage + offset, buffer, length); /* write to TPS area */
+		page_t newPage = malloc(sizeof(Page));
 
-	ret = mprotect(tps->_storage + offset, length, PROT_NONE);
+		newPage->_refCount = 1;
+		newPage->_pageAddr = mmap(NULL, TPS_SIZE,
+								  PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
-	assert(ret == 0);
+		/* clone content from the old page */
+
+		mprotect(tps->_page->_pageAddr, TPS_SIZE, PROT_READ);
+		mprotect(newPage->_pageAddr, TPS_SIZE, PROT_WRITE);
+
+		memcpy(newPage->_pageAddr, tps->_page->_pageAddr, TPS_SIZE);
+
+		mprotect(tps->_page->_pageAddr, TPS_SIZE, PROT_NONE);
+		mprotect(newPage->_pageAddr, TPS_SIZE, PROT_NONE);
+
+		tps->_page = newPage;
+	}
+
+	/* begin writing to TPS area */
+
+	mprotect(tps->_page->_pageAddr + offset, length, PROT_WRITE);
+
+	memcpy(tps->_page->_pageAddr + offset, buffer, length);
+
+	mprotect(tps->_page->_pageAddr + offset, length, PROT_NONE);
 
 	exit_critical_section();
 
@@ -278,37 +305,41 @@ int tps_write(size_t offset, size_t length, char *buffer)
 
 int tps_clone(pthread_t tid)
 {
-	//printf("%s\n", __func__);
+
+	if (!init)
+	{
+		return -1;
+	}
+
 	tps_t srcTPS = NULL;
-	tps_t tgtTPS = NULL;
 
 	int isSrcTPSInvalid = !hasTPSBeenAllocated(tid, &srcTPS);
 	int isTPSAllocated = hasTPSBeenAllocated(pthread_self(), NULL);
 
 	if (isSrcTPSInvalid || isTPSAllocated)
 	{
-		printf("TPS clone failure\n");
 		return -1;
 	}
 
-	assert(srcTPS != NULL);
-
-	tps_create(); /* init a TPS area */
-
-	isTPSAllocated = hasTPSBeenAllocated(pthread_self(), &tgtTPS);
-
-	assert(tgtTPS != NULL && isTPSAllocated == 1);
+	/* create TPS for current thread */
 
 	enter_critical_section();
 
-	mprotect(tgtTPS->_storage, TPS_SIZE, PROT_WRITE);
-	mprotect(srcTPS->_storage, TPS_SIZE, PROT_READ);
+	if (srcTPS->_page == NULL)
+	{
+		/* TPS clone failure: target TPS has been destroyed */
+		exit_critical_section();
+		return -1;
+	}
 
-	/* naive clone TPS area */
-	memcpy(tgtTPS->_storage, srcTPS->_storage, TPS_SIZE);
+	tps_t newTPS = malloc(sizeof(TPS));
 
-	mprotect(tgtTPS->_storage, TPS_SIZE, PROT_NONE);
-	mprotect(srcTPS->_storage, TPS_SIZE, PROT_NONE);
+	newTPS->_tid = pthread_self();
+	newTPS->_page = srcTPS->_page;
+
+	newTPS->_page->_refCount += 1; /* increment reference count */
+
+	queue_enqueue(tpsQueue, newTPS);
 
 	exit_critical_section();
 

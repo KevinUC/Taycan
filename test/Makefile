@@ -5,6 +5,8 @@ programs := \
 	sem_prime.x \
 	tps.x \
 	tps_protection.x \
+	tps_copy_on_write.x \
+	tps_error_handle.x \
 
 # User-level thread library
 UTHREADLIB := libuthread
@@ -64,6 +66,7 @@ $(libuthread):
 
 
 tps_protection.x: LDFLAGS += -Wl,--wrap=mmap
+tps_copy_on_write.x: LDFLAGS += -Wl,--wrap=mmap
 
 # Generic rule for linking final applications
 %.x: %.o $(libuthread)

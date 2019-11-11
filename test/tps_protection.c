@@ -8,6 +8,13 @@
 #include <tps.h>
 #include <sem.h>
 
+/*
+ *
+ *  Test if the library can capture TPS protection errors.
+ *  The program should output "TPS protection error!" and then quit on seg
+ *  fault.
+*/
+
 void *latestMmapAddr = NULL; /* address returned by mmap accessible */
 
 void *__real_mmap(void *addr, size_t len, int prot, int flags, int fildes, off_t off);
@@ -26,8 +33,6 @@ void *thread2(void *arg)
 {
     /* invalid access to thread1's TPS area */
     char *addr = latestMmapAddr;
-
-    printf("starting invalid access...\n");
 
     addr[0] = 'a'; /* causes TPS protection error */
 
@@ -56,7 +61,7 @@ int main(int argc, char **argv)
 {
     pthread_t tid;
 
-    /* Create two semaphores for thread synchro */
+    /* Create a semaphore for thread synchro */
     sem1 = sem_create(0);
 
     /* Init TPS API */
